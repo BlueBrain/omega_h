@@ -99,11 +99,17 @@ void seek_line(std::istream& stream, std::string const& want) {
 }
 
 static void register_physical_entity(Mesh& mesh,
-    const std::vector<std::string>& names, Int dim, Int number, Int physical) {
+    const std::vector<std::string>& names, Int dim, Int entity, Int physical) {
   if (physical != 0) {
-    auto& set =
-        mesh.class_sets[names.at(static_cast<std::size_t>(physical - 1))];
-    set.emplace_back(dim, number - 1);
+    std::string name;
+    if (static_cast<size_t>(physical) <= names.size()) {
+      // physical was registered in section $PhysicalNames
+      name = names[static_cast<size_t>(physical - 1)];
+    } else {
+      name = std::to_string(physical);
+    }
+    auto& set = mesh.class_sets[name];
+    set.emplace_back(dim, entity - 1);
   }
 }
 
