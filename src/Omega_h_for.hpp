@@ -64,7 +64,7 @@ void parallel_for(LO n, T const& f, char const* name = "") {
 #else
   (void)name;
   auto f2 = f;
-  parallel_for(n, std::move(f));
+  parallel_for(n, std::move(f2));
 #endif
 }
 
