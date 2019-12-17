@@ -182,7 +182,7 @@ static void read_internal_entities_section(Real format,
     }
   }
   const std::vector<std::pair<Int, Int>> params{
-      {num_curves, 2}, {num_surfaces, 2}, {num_volumes, 3}};
+      {num_curves, 1}, {num_surfaces, 2}, {num_volumes, 3}};
   for (auto param : params) {
     auto num_elements = param.first;
     const auto dim = param.second;
