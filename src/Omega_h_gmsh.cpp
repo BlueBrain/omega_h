@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <unordered_map>
 
 #include "Omega_h_build.hpp"
 #include "Omega_h_class.hpp"
@@ -356,48 +357,48 @@ void read_internal(std::istream& stream, Mesh* mesh) {
       read(stream, element_tag, is_binary, needs_swapping);  // min
       read(stream, element_tag, is_binary, needs_swapping);  // max
     }
-      for (int entity_block = 0; entity_block < num_entity_blocks;
-           ++entity_block) {
-        int class_id, class_dim;
-        if (format == 4.) {
-          read(stream, class_id, is_binary, needs_swapping);
-          read(stream, class_dim, is_binary, needs_swapping);
-        } else {
-          read(stream, class_dim, is_binary, needs_swapping);
-          read(stream, class_id, is_binary, needs_swapping);
-        }
-        int ent_type, num_block_ents;
-        read(stream, ent_type, is_binary, needs_swapping);
-        read(stream, num_block_ents, is_binary, needs_swapping);
-        Int dim = type_dim(ent_type);
-        OMEGA_H_CHECK(dim == class_dim);
-        if (type_family(ent_type) == OMEGA_H_HYPERCUBE) {
-          family = OMEGA_H_HYPERCUBE;
-        }
-        int nodes_per_ent = element_degree(family, dim, 0);
-        ent_class_ids[dim].reserve(
-            ent_class_ids[dim].size() + std::size_t(num_block_ents));
-        ent_nodes[dim].reserve(ent_nodes[dim].size() +
-                               std::size_t(num_block_ents * nodes_per_ent));
-        for (int block_ent = 0; block_ent < num_block_ents; ++block_ent) {
-          ent_class_ids[dim].push_back(class_id);
-          int ent_number;
-          read(stream, ent_number, is_binary, needs_swapping);
-          if (class_id != 0) {
-            for (const auto physical : entity2physicals[class_dim][class_id]) {
-              register_physical_entity(
-                  *mesh, physical_names, class_dim, ent_number, physical);
-            }
+    for (int entity_block = 0; entity_block < num_entity_blocks;
+         ++entity_block) {
+      int class_id, class_dim;
+      if (format == 4.) {
+        read(stream, class_id, is_binary, needs_swapping);
+        read(stream, class_dim, is_binary, needs_swapping);
+      } else {
+        read(stream, class_dim, is_binary, needs_swapping);
+        read(stream, class_id, is_binary, needs_swapping);
+      }
+      int ent_type, num_block_ents;
+      read(stream, ent_type, is_binary, needs_swapping);
+      read(stream, num_block_ents, is_binary, needs_swapping);
+      Int dim = type_dim(ent_type);
+      OMEGA_H_CHECK(dim == class_dim);
+      if (type_family(ent_type) == OMEGA_H_HYPERCUBE) {
+        family = OMEGA_H_HYPERCUBE;
+      }
+      int nodes_per_ent = element_degree(family, dim, 0);
+      ent_class_ids[dim].reserve(
+          ent_class_ids[dim].size() + std::size_t(num_block_ents));
+      ent_nodes[dim].reserve(
+          ent_nodes[dim].size() + std::size_t(num_block_ents * nodes_per_ent));
+      for (int block_ent = 0; block_ent < num_block_ents; ++block_ent) {
+        ent_class_ids[dim].push_back(class_id);
+        int ent_number;
+        read(stream, ent_number, is_binary, needs_swapping);
+        if (class_id != 0) {
+          for (const auto physical : entity2physicals[class_dim][class_id]) {
+            register_physical_entity(
+                *mesh, physical_names, class_dim, ent_number, physical);
           }
-          for (int ent_node = 0; ent_node < nodes_per_ent; ++ent_node) {
-            int node_number;
-            read(stream, node_number, is_binary, needs_swapping);
-            auto it = node_number_map.find(node_number);
-            OMEGA_H_CHECK(it != node_number_map.end());
-            ent_nodes[dim].push_back(it->second);
-          }
+        }
+        for (int ent_node = 0; ent_node < nodes_per_ent; ++ent_node) {
+          int node_number;
+          read(stream, node_number, is_binary, needs_swapping);
+          auto it = node_number_map.find(node_number);
+          OMEGA_H_CHECK(it != node_number_map.end());
+          ent_nodes[dim].push_back(it->second);
         }
       }
+    }
 
   } else {
     LO nents;
@@ -504,6 +505,41 @@ void read_internal(std::istream& stream, Mesh* mesh) {
   finalize_classification(mesh);
 }
 
+/**
+ * Cleanup mesh class set:
+ * 1. remove classpairs that belong to other ranks
+ * 2. replace global id by local's
+ */
+static void update_class_sets(Mesh& mesh) {
+  // map(global->local) per dimension
+  std::vector<std::unordered_map<int, int>> g2ls(mesh.dim());
+  for (auto dim = 1u; dim <= g2ls.size(); ++dim) {
+    auto& map = g2ls[dim - 1];
+    const auto& l2g = mesh.globals(dim);
+    for (LO local{}; local < l2g.size(); ++local) {
+      map[l2g[local]] = local;
+    }
+  }
+
+  const auto g2l_owned_only = [&g2ls](ClassPair& cp) {
+    const auto& map = g2ls.at(cp.dim - 1);
+    auto globalIt = map.find(cp.id);
+    if (globalIt == map.end()) {
+      // exclude classpair if not for this rank
+      return true;
+    }
+    // replace global id by local's
+    cp.id = globalIt->second;
+    return false;
+  };
+
+  for (auto& class_set : mesh.class_sets) {
+    auto& cps = class_set.second;
+    cps.erase(
+        std::remove_if(cps.begin(), cps.end(), g2l_owned_only), cps.end());
+  }
+}
+
 }  // end anonymous namespace
 
 Mesh read(std::istream& stream, CommPtr comm) {
@@ -513,6 +549,11 @@ Mesh read(std::istream& stream, CommPtr comm) {
   }
   mesh.set_comm(comm);
   mesh.balance();
+
+  mesh.set_parting(OMEGA_H_GHOSTED);
+  update_class_sets(mesh);
+  mesh.set_parting(OMEGA_H_ELEM_BASED);
+
   return mesh;
 }
 
